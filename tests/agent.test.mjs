@@ -323,3 +323,59 @@ test('manual quick login rejects a QQ number belonging to another instance', asy
   assert.deepEqual(service.calls.quick, []);
   controller.dispose();
 });
+
+test('unsolicited login-service logout callbacks cannot erase successful QR login', () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  service.listener.onQRCodeLoginSucceed({uin:'12345678',uid:'u_private',nickName:'private'});
+  service.listener.onLogoutSucceed();
+  service.listener.onLogoutFailed('old login-service cleanup');
+  service.listener.onLoginConnected();
+  assert.equal(controller.publicSnapshot().phase, 'online');
+  assert.equal(controller.publicSnapshot().account.uin, '12345678');
+  assert.equal(service.calls.refresh, 0);
+  assert.equal(controller.getQrCode(), null);
+  assert.equal(controller.publicSnapshot().events.find(e=>e.event==='onLogoutSucceed').phase, 'online');
+  assert.doesNotMatch(JSON.stringify(controller.publicSnapshot().events), /private|12345678/);
+  controller.dispose();
+});
+
+test('a login-service cleanup callback cannot interrupt automatic recovery', async () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  await service.listener.onLoginConnected();
+  service.listener.onLogoutSucceed();
+  assert.equal(controller.publicSnapshot().phase, 'quick_login');
+  service.listener.onUserLoggedIn('12345678');
+  service.listener.onLogoutSucceed();
+  assert.equal(controller.publicSnapshot().phase, 'online');
+  assert.equal(controller.publicSnapshot().recovery.status, 'restored');
+  controller.dispose();
+});
+
+test('real login transport disconnection remains visible after successful login', () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  service.listener.onQRCodeLoginSucceed({uin:'12345678'});
+  service.listener.onLoginDisConnected();
+  assert.equal(controller.publicSnapshot().phase, 'disconnected');
+  controller.dispose();
+});
+
+test('unsolicited logout cannot cancel QR login or remove its image', () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  service.listener.onQRCodeGetPicture({pngBase64QrcodeData:Buffer.from('qr').toString('base64')});
+  service.listener.onLogoutSucceed();
+  assert.equal(controller.publicSnapshot().phase, 'waiting_scan');
+  assert.ok(controller.getQrCode());
+  controller.dispose();
+});
+
+test('logout confirmation is bounded and expired callbacks cannot change later state', async () => {
+  const service = fakeService(); const { controller, fire } = recoveryController(service);
+  service.listener.onQRCodeLoginSucceed({uin:'12345678'});
+  await controller.logout();
+  fire(15_000);
+  assert.equal(controller.publicSnapshot().phase, 'failed');
+  service.listener.onQRCodeLoginSucceed({uin:'12345678'});
+  service.listener.onLogoutSucceed();
+  assert.equal(controller.publicSnapshot().phase, 'online');
+  controller.dispose();
+});

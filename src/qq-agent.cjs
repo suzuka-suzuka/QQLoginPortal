@@ -77,6 +77,9 @@ function createQQLoginController(loginService, {
   if (expectedUin && !UIN_RE.test(expectedUin)) throw new Error('expectedUin 必须是有效 QQ 号');
 
   let pendingLogoutState = null;
+  let logoutRequested = false;
+  let logoutTimer = null;
+  const loginEvents = [];
   let disposed = false;
   let generation = 0;
   let startupStarted = false;
@@ -122,6 +125,14 @@ function createQQLoginController(loginService, {
   const update = patch => {
     Object.assign(state, patch, { updatedAt: now() });
   };
+  const recordEvent = (event, previousPhase) => {
+    loginEvents.push({ event, previousPhase, phase: state.phase, at: now() });
+    if (loginEvents.length > 24) loginEvents.shift();
+  };
+  const clearLogoutRequest = () => {
+    logoutRequested = false;
+    cancelTimer(logoutTimer); timers.delete(logoutTimer); logoutTimer = null;
+  };
 
   const publicSnapshot = () => ({
     instanceId: state.instanceId,
@@ -137,6 +148,7 @@ function createQQLoginController(loginService, {
     },
     error: state.error,
     recovery: { ...state.recovery },
+    events: loginEvents.map(event => ({ ...event })),
     updatedAt: state.updatedAt,
   });
 
@@ -212,18 +224,30 @@ function createQQLoginController(loginService, {
 
   const logout = async () => {
     if (typeof loginService.offline !== 'function') throw new Error('当前 QQ 不支持内核退出登录');
+    if (logoutRequested) throw new Error('正在退出 QQ，请等待结果');
     startupStarted = true;
     generation++;
     cancelQuick();
+    logoutRequested = true;
     update({ phase: 'logging_out', error: '' });
+    logoutTimer = later(() => {
+      clearLogoutRequest();
+      pendingLogoutState = null;
+      update({ phase: 'failed', error: 'QQ 未确认退出结果，请检查账号状态。' });
+    }, 15_000);
     try {
       const result = await Promise.resolve(loginService.offline());
+      if (!logoutRequested) return { accepted: state.account === null };
       if (result === false) {
+        clearLogoutRequest();
+        pendingLogoutState = null;
         update({ phase: 'failed', error: 'QQ 暂未接受退出登录请求' });
         return { accepted: false };
       }
       return { accepted: true };
     } catch (error) {
+      clearLogoutRequest();
+      pendingLogoutState = null;
       update({ phase: 'failed', error: `退出登录失败：${errorText(error)}` });
       throw error;
     }
@@ -288,6 +312,7 @@ function createQQLoginController(loginService, {
   listener.onQRCodeSessionUserScaned = () => { if (!ignoreQr()) update({ phase: 'scanned', error: '' }); };
   listener.onQRCodeLoginSucceed = result => {
     if (disposed) return;
+    clearLogoutRequest();
     const restored = activeQuick?.automatic === true;
     generation++;
     cancelQuick();
@@ -341,6 +366,10 @@ function createQQLoginController(loginService, {
   listener.onQRCodeSessionQuickLoginFailed = loginFailed;
   listener.OnConfirmUnusualDeviceFailed = loginFailed;
   listener.onLogoutSucceed = () => {
+    // Login-service lifecycle notifications are not necessarily a user logout.
+    // Only consume this callback as confirmation of a request made by this agent.
+    if (!logoutRequested) return;
+    clearLogoutRequest();
     const nextState = pendingLogoutState ?? { phase: 'connected', error: '' };
     pendingLogoutState = null;
     update({
@@ -354,16 +383,29 @@ function createQQLoginController(loginService, {
     void refreshHistory();
   };
   listener.onLogoutFailed = (...args) => {
+    if (!logoutRequested) return;
+    clearLogoutRequest();
     pendingLogoutState = null;
     update({ phase: 'failed', error: `退出登录失败：${args.map(errorText).join(' ')}` });
   };
   listener.onUserLoggedIn = userId => {
+    if (state.phase === 'online') return;
     const uin = UIN_RE.test(String(userId)) ? String(userId) : activeQuick?.uin || state.account?.uin || expectedUin;
     listener.onQRCodeLoginSucceed({ uin, uid: UIN_RE.test(String(userId)) ? '' : String(userId ?? '') });
   };
   listener.onLoginRecordUpdate = () => {
     if (state.recovery.status !== 'checking') void refreshHistory();
   };
+
+  for (const event of ['onLoginConnected', 'onLoginConnecting', 'onLoginDisConnected', 'onQRCodeLoginSucceed', 'onUserLoggedIn', 'onLogoutSucceed', 'onLogoutFailed', 'onLoginFailed', 'onQRCodeSessionQuickLoginFailed', 'onLoginState']) {
+    const handler = listener[event].bind(listener);
+    listener[event] = (...args) => {
+      if (disposed) return;
+      const previousPhase = state.phase;
+      try { return handler(...args); }
+      finally { recordEvent(event, previousPhase); }
+    };
+  }
 
   const listenerId = loginService.addKernelLoginListener(listener);
   update({ phase: 'connecting' });
@@ -384,6 +426,7 @@ function createQQLoginController(loginService, {
       disposed = true;
       generation++;
       cancelQuick();
+      clearLogoutRequest();
       for (const timer of timers) cancelTimer(timer);
       timers.clear();
       if (typeof loginService.removeKernelLoginListener === 'function') {

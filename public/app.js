@@ -291,6 +291,21 @@ function createPortalUI() {
     }
   }
 
+  function renderAvatar(element, identity) {
+    if (element.dataset.uin === identity) return;
+    element.dataset.uin = identity;
+    element.innerHTML = icon('accounts');
+    if (!/^[1-9]\d{4,19}$/.test(identity)) return;
+    const image = document.createElement('img');
+    image.alt = '';
+    image.referrerPolicy = 'no-referrer';
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    image.addEventListener('error', () => image.remove(), { once: true });
+    image.src = `https://q1.qlogo.cn/g?b=qq&nk=${identity}&s=100`;
+    element.append(image);
+  }
+
   function createCard(id) {
     const card = document.createElement('article');
     card.className = 'account-card';
@@ -338,7 +353,7 @@ function createPortalUI() {
     const actions = availableActions(instance);
     const phase = effectivePhase(instance);
     refs.number.textContent = identity;
-    refs.avatar.textContent = identity.slice(-2);
+    renderAvatar(refs.avatar, identity);
     refs.summary.setAttribute('aria-label', `管理 QQ ${identity}`);
     refs.phase.textContent = phaseLabel(instance);
     refs.phase.dataset.tone = toneFor(instance);
@@ -398,7 +413,7 @@ function createPortalUI() {
         scanRefs.set(instance.id, refs);
       }
       refs.number.textContent = instanceIdentity(instance);
-      refs.avatar.textContent = instanceIdentity(instance).slice(-2);
+      renderAvatar(refs.avatar, instanceIdentity(instance));
       refs.phase.textContent = phaseLabel(instance);
       refs.button.setAttribute('aria-pressed', String(instance.id === selectedId));
       refs.button.setAttribute('aria-label', `选择 QQ ${instanceIdentity(instance)}`);

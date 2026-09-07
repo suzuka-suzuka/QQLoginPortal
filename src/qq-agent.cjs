@@ -67,6 +67,8 @@ function createQQLoginController(loginService, {
   pid = process.pid,
   now = () => Date.now(),
   schedule = (callback, delay) => setTimeout(callback, delay),
+  setTimer = setTimeout,
+  cancelTimer = clearTimeout,
 } = {}) {
   if (!loginService || typeof loginService.addKernelLoginListener !== 'function') {
     throw new Error('QQ wrapper 没有提供 NodeIKernelLoginService');
@@ -75,6 +77,30 @@ function createQQLoginController(loginService, {
   if (expectedUin && !UIN_RE.test(expectedUin)) throw new Error('expectedUin 必须是有效 QQ 号');
 
   let pendingLogoutState = null;
+  let disposed = false;
+  let generation = 0;
+  let startupStarted = false;
+  let activeQuick = null;
+  let quickTimer = null;
+  let historyRevision = 0;
+  const timers = new Set();
+
+  const later = (callback, delay) => {
+    const timer = setTimer(() => { timers.delete(timer); if (!disposed) callback(); }, delay);
+    timers.add(timer);
+    timer?.unref?.();
+    return timer;
+  };
+  const bounded = (operation, delay, message) => new Promise((resolve, reject) => {
+    const timer = later(() => reject(new Error(message)), delay);
+    Promise.resolve().then(operation).then(resolve, reject).finally(() => {
+      cancelTimer(timer); timers.delete(timer);
+    });
+  });
+  const cancelQuick = () => {
+    activeQuick = null;
+    cancelTimer(quickTimer); timers.delete(quickTimer); quickTimer = null;
+  };
 
   const state = {
     instanceId,
@@ -89,6 +115,7 @@ function createQQLoginController(loginService, {
     quickLoginAccounts: [],
     account: null,
     error: '',
+    recovery: { status: 'idle', message: '', rememberCredentials: false },
     updatedAt: now(),
   };
 
@@ -109,36 +136,75 @@ function createQQLoginController(loginService, {
       logout: typeof loginService.offline === 'function',
     },
     error: state.error,
+    recovery: { ...state.recovery },
     updatedAt: state.updatedAt,
   });
 
   const refreshHistory = async () => {
-    if (typeof loginService.getLoginList !== 'function') return;
+    const revision = ++historyRevision;
+    if (typeof loginService.getLoginList !== 'function') return [];
     try {
-      const result = await loginService.getLoginList();
-      update({ quickLoginAccounts: normalizeQuickLoginAccounts(result) });
+      const result = await bounded(() => loginService.getLoginList(), 4_000, '读取历史登录信息超时');
+      if (disposed || revision !== historyRevision) return [];
+      if (result?.result != null && String(result.result) !== '0') throw new Error(`历史登录接口返回 ${result.result}`);
+      const accounts = normalizeQuickLoginAccounts(result);
+      const history = Array.isArray(result?.LocalLoginInfoList) ? result.LocalLoginInfoList : [];
+      state.recovery = { ...state.recovery, historyCount: history.length, hasSavedAccount: history.some(item => String(item?.uin) === expectedUin) };
+      update({ quickLoginAccounts: accounts });
+      return accounts;
     } catch (error) {
-      update({ error: `读取快速登录列表失败：${errorText(error)}` });
+      if (!disposed && revision === historyRevision && state.phase !== 'online') update({ quickLoginAccounts: [], error: `读取快速登录列表失败：${errorText(error)}` });
+      return [];
     }
   };
 
   const requestQrCode = () => {
+    if (disposed || state.phase === 'online') return false;
+    generation++;
+    cancelQuick();
+    if (['checking', 'restoring'].includes(state.recovery.status)) state.recovery = { ...state.recovery, status: 'qr_required', message: '' };
     if (typeof loginService.getQRCodePicture !== 'function') throw new Error('当前 QQ 不支持获取登录二维码');
-    update({ phase: 'refreshing', error: '' });
+    update({ phase: 'refreshing', error: '', qrcodeAvailable: false, qrcodeBase64: '' });
     const accepted = loginService.getQRCodePicture();
     if (accepted === false) update({ phase: 'connected', error: 'QQ 暂未接受二维码刷新请求' });
     return accepted !== false;
   };
 
-  const quickLogin = async uin => {
+  const fallbackToQr = message => {
+    if (disposed || state.phase === 'online') return;
+    state.recovery = { ...state.recovery, status: 'qr_required', message };
+    try { requestQrCode(); } catch (error) { update({ phase: 'failed', error: errorText(error) }); }
+  };
+
+  const quickLogin = async (uin, automatic = false) => {
     if (!UIN_RE.test(String(uin ?? ''))) throw new Error('QQ 号格式无效');
+    if (expectedUin && String(uin) !== expectedUin) throw new Error('只能登录当前实例对应的 QQ 号');
+    if (disposed || state.phase === 'online') throw new Error('账号已登录或实例已关闭');
+    if (activeQuick) throw new Error('正在恢复登录，请等待结果');
     if (typeof loginService.quickLoginWithUin !== 'function') throw new Error('当前 QQ 不支持快速登录');
-    update({ phase: 'quick_login', error: '' });
-    const result = await loginService.quickLoginWithUin(String(uin));
+    const attempt = { generation: ++generation, automatic, uin: String(uin) };
+    activeQuick = attempt;
+    update({ phase: 'quick_login', error: '', qrcodeAvailable: false, qrcodeBase64: '' });
+    const fail = message => {
+      if (activeQuick !== attempt) return;
+      cancelQuick();
+      if (automatic) fallbackToQr(message);
+      else update({ phase: 'failed', error: message });
+    };
+    quickTimer = later(() => fail('恢复登录超时，请扫码登录。'), 15_000);
+    let result;
+    try {
+      result = await bounded(() => loginService.quickLoginWithUin(String(uin)), 12_000, '快速登录接口超时');
+    } catch (error) {
+      const message = errorText(error);
+      fail(message);
+      return { success: false, message };
+    }
+    if (activeQuick !== attempt) return { success: state.phase === 'online', message: state.phase === 'online' ? '' : '登录流程已切换' };
     const success = String(result?.result ?? '') === '0' && !result?.loginErrorInfo?.errMsg;
     if (!success) {
       const message = result?.loginErrorInfo?.errMsg || `快速登录失败，错误码：${String(result?.result ?? 'unknown')}`;
-      update({ phase: 'failed', error: message });
+      fail(message);
       return { success: false, message };
     }
     return { success: true, message: '' };
@@ -146,6 +212,9 @@ function createQQLoginController(loginService, {
 
   const logout = async () => {
     if (typeof loginService.offline !== 'function') throw new Error('当前 QQ 不支持内核退出登录');
+    startupStarted = true;
+    generation++;
+    cancelQuick();
     update({ phase: 'logging_out', error: '' });
     try {
       const result = await Promise.resolve(loginService.offline());
@@ -160,23 +229,50 @@ function createQQLoginController(loginService, {
     }
   };
 
-  const listener = new QQLoginListener();
-  listener.onLoginConnecting = () => update({ phase: 'connecting', connected: false, error: '' });
-  listener.onLoginConnected = () => {
-    update({ phase: 'connected', connected: true, error: '' });
-    void refreshHistory();
-    const timer = schedule(() => {
-      try { requestQrCode(); } catch (error) { update({ phase: 'failed', error: errorText(error) }); }
-    }, 100);
-    timer?.unref?.();
+  const restoreLogin = async () => {
+    const run = generation;
+    const current = () => !disposed && run === generation && state.connected && state.phase !== 'online';
+    state.recovery = { ...state.recovery, status: 'checking', message: '正在检查已保存的登录信息。' };
+    if (typeof loginService.setRemerberPwd === 'function') {
+      try {
+        const result = await bounded(() => loginService.setRemerberPwd(true), 2_000, '保存登录凭据设置超时');
+        if (current()) state.recovery.rememberCredentials = result !== false;
+      } catch { /* Older kernels may not support changing this preference. */ }
+    }
+    if (!current()) return;
+    const accounts = await refreshHistory();
+    if (!current()) return;
+    const account = accounts.find(item => item.uin === expectedUin);
+    if (!account) return fallbackToQr(state.error || '没有可用于恢复登录的凭据，请扫码登录。');
+    if (typeof loginService.quickLoginWithUin !== 'function') return fallbackToQr('当前 QQ 不支持快速登录，请扫码登录。');
+    state.recovery = { ...state.recovery, status: 'restoring', message: '正在恢复当前账号的登录。' };
+    await quickLogin(account.uin, true);
   };
-  listener.onLoginDisConnected = (...args) => update({
+
+  const listener = new QQLoginListener();
+  listener.onLoginConnecting = () => {
+    if (!activeQuick && state.phase !== 'online') update({ phase: 'connecting', connected: false, error: '' });
+  };
+  listener.onLoginConnected = () => {
+    if (disposed || state.phase === 'online' || activeQuick || (startupStarted && state.connected)) return;
+    update({ phase: 'connected', connected: true, error: '' });
+    if (startupStarted) { fallbackToQr('连接已恢复，请扫码登录。'); return; }
+    startupStarted = true;
+    return restoreLogin().catch(error => fallbackToQr(errorText(error)));
+  };
+  listener.onLoginDisConnected = (...args) => {
+    generation++;
+    cancelQuick();
+    update({
     phase: 'disconnected',
     connected: false,
     error: args.length > 0 ? `登录服务已断开：${args.map(errorText).join(' ')}` : '登录服务已断开',
-  });
-  listener.onQRCodeLoginPollingStarted = () => update({ phase: 'waiting_scan', connected: true, error: '' });
+    });
+  };
+  const ignoreQr = () => disposed || state.phase === 'online' || activeQuick !== null || state.recovery.status === 'checking';
+  listener.onQRCodeLoginPollingStarted = () => { if (!ignoreQr()) update({ phase: 'waiting_scan', connected: true, error: '' }); };
   listener.onQRCodeGetPicture = payload => {
+    if (ignoreQr()) return;
     const image = parseQrImage(payload?.pngBase64QrcodeData);
     update({
       phase: 'waiting_scan',
@@ -189,8 +285,12 @@ function createQQLoginController(loginService, {
       error: image ? '' : 'QQ 已返回二维码地址，但二维码图片数据无效',
     });
   };
-  listener.onQRCodeSessionUserScaned = () => update({ phase: 'scanned', error: '' });
+  listener.onQRCodeSessionUserScaned = () => { if (!ignoreQr()) update({ phase: 'scanned', error: '' }); };
   listener.onQRCodeLoginSucceed = result => {
+    if (disposed) return;
+    const restored = activeQuick?.automatic === true;
+    generation++;
+    cancelQuick();
     const account = {
       uin: String(result?.uin ?? result?.account ?? ''),
       uid: typeof result?.uid === 'string' ? result.uid : '',
@@ -205,6 +305,8 @@ function createQQLoginController(loginService, {
       account,
       error: '',
     });
+    state.recovery = { ...state.recovery, status: restored ? 'restored' : 'idle', message: '' };
+    void refreshHistory();
     if (expectedUin && account.uin && account.uin !== expectedUin) {
       pendingLogoutState = {
         phase: 'account_mismatch',
@@ -217,6 +319,7 @@ function createQQLoginController(loginService, {
     }
   };
   listener.onQRCodeSessionFailed = (errorType, errorCode) => {
+    if (ignoreQr()) return;
     const expired = Number(errorType) === 1 && Number(errorCode) === 3;
     update({
       phase: expired ? 'expired' : 'failed',
@@ -224,9 +327,19 @@ function createQQLoginController(loginService, {
       error: expired ? '二维码已过期，请刷新' : `二维码登录失败（${errorType}/${errorCode}）`,
     });
   };
-  listener.onLoginFailed = (...args) => update({ phase: 'failed', error: `登录失败：${args.map(errorText).join(' ')}` });
-  listener.onPasswordLoginFailed = (...args) => update({ phase: 'failed', error: `登录失败：${args.map(errorText).join(' ')}` });
-  listener.onQRCodeSessionQuickLoginFailed = (...args) => update({ phase: 'failed', error: `快速登录失败：${args.map(errorText).join(' ')}` });
+  const loginFailed = (...args) => {
+    if (disposed || state.phase === 'online') return;
+    if (!activeQuick && state.recovery.status === 'qr_required') return;
+    const automatic = activeQuick?.automatic;
+    cancelQuick();
+    const message = `登录失败：${args.map(errorText).join(' ')}`;
+    if (automatic) fallbackToQr(message);
+    else update({ phase: 'failed', error: message });
+  };
+  listener.onLoginFailed = loginFailed;
+  listener.onPasswordLoginFailed = loginFailed;
+  listener.onQRCodeSessionQuickLoginFailed = loginFailed;
+  listener.OnConfirmUnusualDeviceFailed = loginFailed;
   listener.onLogoutSucceed = () => {
     const nextState = pendingLogoutState ?? { phase: 'connected', error: '' };
     pendingLogoutState = null;
@@ -244,16 +357,16 @@ function createQQLoginController(loginService, {
     pendingLogoutState = null;
     update({ phase: 'failed', error: `退出登录失败：${args.map(errorText).join(' ')}` });
   };
-  listener.onUserLoggedIn = userId => update({
-    phase: 'online',
-    connected: true,
-    account: state.account ?? { uin: String(userId ?? ''), uid: '', nickname: '' },
-    error: '',
-  });
+  listener.onUserLoggedIn = userId => {
+    const uin = UIN_RE.test(String(userId)) ? String(userId) : activeQuick?.uin || state.account?.uin || expectedUin;
+    listener.onQRCodeLoginSucceed({ uin, uid: UIN_RE.test(String(userId)) ? '' : String(userId ?? '') });
+  };
+  listener.onLoginRecordUpdate = () => {
+    if (state.recovery.status !== 'checking') void refreshHistory();
+  };
 
   const listenerId = loginService.addKernelLoginListener(listener);
   update({ phase: 'connecting' });
-  void refreshHistory();
 
   return {
     listener,
@@ -268,6 +381,11 @@ function createQQLoginController(loginService, {
     quickLogin,
     logout,
     dispose: () => {
+      disposed = true;
+      generation++;
+      cancelQuick();
+      for (const timer of timers) cancelTimer(timer);
+      timers.clear();
       if (typeof loginService.removeKernelLoginListener === 'function') {
         try { loginService.removeKernelLoginListener(listenerId); } catch { /* QQ may already be shutting down. */ }
       }

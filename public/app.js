@@ -34,7 +34,7 @@ export function availableActions(instance) {
   return {
     start: instance.enabled !== false && !running,
     stop: running,
-    refresh: running && instance.login?.connected === true && !online,
+    refresh: running && instance.login?.connected === true && !online && !['quick_login', 'logging_out'].includes(effectivePhase(instance)) && instance.login?.recovery?.status !== 'checking',
     logout: running && online && instance.login?.capabilities?.logout === true,
     remove: !running,
   };
@@ -358,6 +358,7 @@ function createPortalUI() {
     refs.phase.textContent = phaseLabel(instance);
     refs.phase.dataset.tone = toneFor(instance);
     refs.description.textContent = phase === 'online' ? '已登录，可以安心关闭网页。'
+      : phase === 'quick_login' ? '正在恢复已保存的登录，请稍等。'
       : phase === 'stopped' ? (instance.enabled === false ? '这个账号已在配置中停用。' : '需要时再启动，登录资料会保留。')
         : phase === 'scanned' ? '已收到扫码，请在手机 QQ 确认。'
           : phase === 'agent_unavailable' ? 'QQ 已运行，暂时无法连接登录桥。'
@@ -456,7 +457,7 @@ function createPortalUI() {
       $('#qr-placeholder').hidden = false;
     }
     $('#scan-help').textContent = presentation.phase === 'online' ? '这个账号已经登录，不需要再次扫码。' : '使用当前 QQ 号的手机端扫码，并确认登录。';
-    setError($('#scan-error'), localErrors.get(instance.id) || instance.startError || instance.login?.error || '');
+    setError($('#scan-error'), localErrors.get(instance.id) || instance.startError || instance.login?.error || (instance.login?.recovery?.status === 'qr_required' ? instance.login.recovery.message : '') || '');
     $('#scan-start').hidden = instance.process?.running === true;
     $('#scan-start').disabled = busy.has(instance.id) || !actions.start;
     $('#scan-refresh').hidden = !instance.process?.running || presentation.phase === 'online';

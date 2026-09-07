@@ -49,7 +49,7 @@ test('tracks QR, scanned, expired, and login-success states from QQ callbacks', 
   const controller = controllerFor(service, 'main');
   await Promise.resolve();
 
-  service.listener.onLoginConnected();
+  await service.listener.onLoginConnected();
   assert.equal(service.calls.refresh, 1);
   service.listener.onQRCodeGetPicture({
     pngBase64QrcodeData: `data:image/png;base64,${Buffer.from('kernel-qr').toString('base64')}`,
@@ -147,4 +147,179 @@ test('surfaces quick-login failure without marking the instance online', async (
   assert.deepEqual(response, { success: false, message: '需要重新扫码' });
   assert.equal(controller.publicSnapshot().phase, 'failed');
   assert.equal(controller.publicSnapshot().account, null);
+});
+
+function recoveryController(service, expectedUin = '12345678') {
+  const timers = new Map();
+  let id = 0;
+  const controller = createQQLoginController(service, {
+    instanceId: expectedUin || 'legacy', expectedUin,
+    setTimer(callback, delay) { const key = ++id; timers.set(key, { callback, delay }); return key; },
+    cancelTimer(key) { timers.delete(key); },
+  });
+  return {
+    controller,
+    fire(delay) { for (const [key, timer] of [...timers]) if (timer.delay === delay) { timers.delete(key); timer.callback(); } },
+  };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('restores only the configured account and waits for a success callback without generating QR', async () => {
+  const service = fakeService();
+  const order = [];
+  const originalHistory = service.getLoginList;
+  service.setRemerberPwd = value => { order.push(['remember', value]); };
+  service.getLoginList = () => { order.push(['history']); return originalHistory(); };
+  const { controller, fire } = recoveryController(service);
+  await service.listener.onLoginConnected();
+  assert.deepEqual(order.slice(0, 2), [['remember', true], ['history']]);
+  assert.deepEqual(service.calls.quick, ['12345678']);
+  assert.equal(service.calls.refresh, 0);
+  assert.equal(controller.publicSnapshot().phase, 'quick_login');
+  service.listener.onQRCodeGetPicture({ pngBase64QrcodeData: Buffer.from('late-qr').toString('base64') });
+  service.listener.onQRCodeSessionFailed(1, 3);
+  assert.equal(controller.publicSnapshot().phase, 'quick_login');
+  service.listener.onUserLoggedIn('12345678');
+  assert.equal(controller.publicSnapshot().phase, 'online');
+  assert.equal(controller.publicSnapshot().recovery.status, 'restored');
+  fire(15_000);
+  service.listener.onLoginConnected();
+  assert.equal(service.calls.refresh, 0);
+  assert.equal(controller.getQrCode(), null);
+  controller.dispose();
+});
+
+test('awaits history before deciding to restore and ignores duplicate connected events', async () => {
+  const service = fakeService();
+  let resolveHistory;
+  service.getLoginList = () => new Promise(resolve => { resolveHistory = resolve; });
+  const { controller } = recoveryController(service);
+  const startup = service.listener.onLoginConnected();
+  await flush();
+  service.listener.onLoginConnected();
+  assert.equal(service.calls.refresh, 0);
+  assert.deepEqual(service.calls.quick, []);
+  resolveHistory({ result: 0, LocalLoginInfoList: [{ uin: '12345678', isQuickLogin: true }] });
+  await startup;
+  assert.deepEqual(service.calls.quick, ['12345678']);
+  controller.dispose();
+});
+
+test('never restores another account or a saved account without valid quick-login capability', async () => {
+  for (const target of ['87654321', '99999999', '']) {
+    const service = fakeService();
+    const { controller } = recoveryController(service, target);
+    await service.listener.onLoginConnected();
+    assert.deepEqual(service.calls.quick, []);
+    assert.equal(service.calls.refresh, 1);
+    assert.equal(controller.publicSnapshot().recovery.status, 'qr_required');
+    controller.dispose();
+  }
+});
+
+test('empty and rejected history responses fall back to QR without login attempts', async () => {
+  for (const result of [{ result: 0, LocalLoginInfoList: [] }, { result: 7, LocalLoginInfoList: [{uin:'12345678',isQuickLogin:true}] }]) {
+    const service = fakeService(); service.getLoginList = async () => result;
+    const { controller } = recoveryController(service);
+    await service.listener.onLoginConnected();
+    assert.deepEqual(service.calls.quick, []);
+    assert.equal(service.calls.refresh, 1);
+    controller.dispose();
+  }
+});
+
+test('rejected or throwing restoration requests fall back once and retain the reason', async () => {
+  for (const throws of [false, true]) {
+    const service = fakeService({ quickResult: { result: '42', loginErrorInfo: {errMsg:'需要设备验证'} } });
+    if (throws) service.quickLoginWithUin = async () => { throw new Error('需要设备验证'); };
+    const { controller, fire } = recoveryController(service);
+    await service.listener.onLoginConnected();
+    assert.equal(service.calls.refresh, 1);
+    assert.match(controller.publicSnapshot().recovery.message, /设备验证/);
+    service.listener.onQRCodeSessionQuickLoginFailed('迟到的失败');
+    fire(15_000);
+    assert.equal(service.calls.refresh, 1);
+    assert.equal(controller.publicSnapshot().phase, 'refreshing');
+    controller.dispose();
+  }
+});
+
+test('accepted restoration without a login-success event times out to QR', async () => {
+  const service = fakeService(); const { controller, fire } = recoveryController(service);
+  await service.listener.onLoginConnected();
+  fire(15_000);
+  assert.equal(service.calls.refresh, 1);
+  assert.match(controller.publicSnapshot().recovery.message, /超时/);
+  assert.notEqual(controller.publicSnapshot().phase, 'online');
+  controller.dispose();
+});
+
+test('history timeout produces QR and a late history response cannot trigger a login', async () => {
+  const service = fakeService(); let resolveHistory;
+  service.getLoginList = () => new Promise(resolve => { resolveHistory = resolve; });
+  const { controller, fire } = recoveryController(service);
+  const startup = service.listener.onLoginConnected(); await flush();
+  fire(4_000); await startup;
+  resolveHistory({LocalLoginInfoList:[{uin:'12345678',isQuickLogin:true}]}); await flush();
+  assert.equal(service.calls.refresh, 1);
+  assert.deepEqual(service.calls.quick, []);
+  controller.dispose();
+});
+
+test('native success while history is loading cancels automatic startup work', async () => {
+  const service = fakeService(); const historyResolvers = [];
+  service.getLoginList = () => new Promise(resolve => historyResolvers.push(resolve));
+  const { controller } = recoveryController(service);
+  const startup = service.listener.onLoginConnected(); await flush();
+  service.listener.onUserLoggedIn('12345678'); await flush();
+  for (const resolve of historyResolvers) resolve({LocalLoginInfoList:[]});
+  await startup;
+  assert.equal(controller.publicSnapshot().phase, 'online');
+  assert.equal(service.calls.refresh, 0);
+  assert.deepEqual(service.calls.quick, []);
+  controller.dispose();
+});
+
+test('manual QR selection cancels pending startup restoration', async () => {
+  const service = fakeService(); let resolveHistory;
+  service.getLoginList = () => new Promise(resolve => { resolveHistory = resolve; });
+  const { controller } = recoveryController(service);
+  const startup = service.listener.onLoginConnected(); await flush();
+  controller.requestQrCode();
+  resolveHistory({LocalLoginInfoList:[{uin:'12345678',isQuickLogin:true}]}); await startup;
+  service.listener.onQRCodeGetPicture({pngBase64QrcodeData:Buffer.from('manual').toString('base64')});
+  assert.equal(controller.publicSnapshot().phase, 'waiting_scan');
+  assert.deepEqual(service.calls.quick, []);
+  controller.dispose();
+});
+
+test('disconnect and dispose invalidate pending restoration work', async () => {
+  for (const action of ['disconnect', 'dispose']) {
+    const service = fakeService(); let resolveHistory;
+    service.getLoginList = () => new Promise(resolve => { resolveHistory = resolve; });
+    const { controller } = recoveryController(service);
+    const startup = service.listener.onLoginConnected(); await flush();
+    if (action === 'disconnect') service.listener.onLoginDisConnected(); else controller.dispose();
+    resolveHistory({LocalLoginInfoList:[{uin:'12345678',isQuickLogin:true}]}); await startup;
+    assert.equal(service.calls.refresh, 0);
+    assert.deepEqual(service.calls.quick, []);
+    controller.dispose();
+  }
+});
+
+test('explicit logout does not automatically log the account back in', async () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  await service.listener.onLoginConnected(); service.listener.onUserLoggedIn('12345678');
+  await controller.logout(); service.listener.onLogoutSucceed();
+  service.listener.onLoginConnected(); await flush();
+  assert.deepEqual(service.calls.quick, ['12345678']);
+  assert.equal(controller.publicSnapshot().phase, 'connected');
+  controller.dispose();
+});
+
+test('manual quick login rejects a QQ number belonging to another instance', async () => {
+  const service = fakeService(); const { controller } = recoveryController(service);
+  await assert.rejects(controller.quickLogin('87654321'), /当前实例/);
+  assert.deepEqual(service.calls.quick, []);
+  controller.dispose();
 });

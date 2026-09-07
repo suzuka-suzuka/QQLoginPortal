@@ -1,0 +1,32 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 5100
+  },
+  "auth": {
+    "password": "请替换为至少12个字符的固定访问密码",
+    "sessionTtlMinutes": 60,
+    "secureCookie": false
+  },
+  "runtime": {
+    "autostart": true,
+    "stateDir": "./state",
+    "xvfb": {
+      "display": ":1",
+      "command": "Xvfb",
+      "args": [":1", "-screen", "0", "1280x720x24", "-nolisten", "tcp"]
+    },
+    "qq": {
+      "command": "/opt/QQ/qq",
+      "resourcesDir": "/opt/QQ/resources/app",
+      "agentEntry": "./src/qq-agent.cjs",
+      "args": ["--no-sandbox"],
+      "startupTimeoutMs": 15000
+    }
+  },
+  "management": {
+    "instanceRoot": "./data/instances",
+    "maxInstances": 16
+  },
+  "instances": []
+}

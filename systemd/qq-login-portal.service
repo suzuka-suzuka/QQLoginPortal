@@ -1,0 +1,24 @@
+[Unit]
+Description=QQ Login Portal multi-instance LinuxQQ login manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/QQLoginPortal
+ExecStart=/usr/local/bin/node src/server.mjs --config ./config.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+Environment=NODE_ENV=production
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/QQLoginPortal /tmp
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

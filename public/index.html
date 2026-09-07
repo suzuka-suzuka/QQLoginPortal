@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0910" />
+    <title>QQ Login Portal · QQ 账号控制台</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="QQ Login Portal 账号控制台">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img"><path d="M5 5h9v9H5V5Zm3 3v3h3V8H8Zm10-3h9v9h-9V5Zm3 3v3h3V8h-3ZM5 18h9v9H5v-9Zm3 3v3h3v-3H8Zm10-3h4v4h-4v-4Zm6 0h3v9h-9v-3h6v-6Z" /></svg>
+          </span>
+          <span><strong>QQ Login Portal</strong><small>ACCOUNT CONSOLE</small></span>
+        </a>
+        <nav id="top-actions" class="top-actions" hidden>
+          <button id="add-instance-button" class="button primary compact" type="button"><span aria-hidden="true">＋</span>新增 QQ</button>
+          <button id="settings-button" class="icon-button" type="button" aria-label="管理设置" title="管理设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15Z"/></svg>
+          </button>
+          <button id="logout-button" class="button ghost compact" type="button" aria-label="退出面板" title="退出面板"><span class="logout-text">退出面板</span><svg class="logout-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v16h5M14 7l5 5-5 5M8 12h11" /></svg></button>
+        </nav>
+      </header>
+
+      <section id="login-panel" class="login-layout" hidden>
+        <article class="login-copy">
+          <p class="eyebrow">PRIVATE CONTROL PLANE</p>
+          <h1>在浏览器里管理<br /><span>每一个 QQ 实例</span></h1>
+          <p>二维码直接来自 QQ 登录内核。账号数据彼此隔离，新增、停止或退出其中一个账号，都不会碰到其他实例。</p>
+          <div class="trust-row"><span>内核二维码</span><span>独立数据目录</span><span>精确进程控制</span></div>
+        </article>
+        <article class="panel login-card">
+          <div class="panel-icon" aria-hidden="true">↗</div>
+          <p class="eyebrow">SECURE ACCESS</p>
+          <h2>进入账号控制台</h2>
+          <p class="muted">请输入配置文件中的固定访问密码。二维码与账号状态不会提供给未认证请求。</p>
+          <form id="login-form" class="stack-form">
+            <label for="password">访问密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" minlength="12" required placeholder="输入固定密码" />
+            <button class="button primary wide" type="submit">进入控制台 <span aria-hidden="true">→</span></button>
+            <p id="login-error" class="form-error" role="alert"></p>
+          </form>
+        </article>
+      </section>
+
+      <section id="portal-panel" hidden>
+        <section class="hero panel">
+          <div><p class="eyebrow">INSTANCE OVERVIEW</p><h1>QQ 账号控制台</h1><p>从这里新增账号、扫码登录、停止进程或安全退出 QQ。</p></div>
+          <div class="hero-stats" aria-label="账号概览">
+            <div><strong id="summary-online">0</strong><span>已在线</span></div>
+            <div><strong id="summary-running">0</strong><span>运行中</span></div>
+            <div><strong id="summary-total">0</strong><span>账号实例</span></div>
+          </div>
+        </section>
+
+        <section class="health-grid" aria-label="全局运行状态">
+          <article class="health-card panel"><span class="status-dot" id="loader-dot"></span><div><strong>QQ 登录桥</strong><small id="loader-status">检查中</small></div></article>
+          <article class="health-card panel"><span class="status-dot" id="display-dot"></span><div><strong>后台显示</strong><small id="display-status">检查中</small></div></article>
+          <article class="health-card panel"><span class="status-dot" id="qq-dot"></span><div><strong>LinuxQQ 客户端</strong><small id="qq-status">检查中</small></div></article>
+          <article class="health-card panel"><span class="status-dot" id="instances-dot"></span><div><strong>QQ 实例</strong><small id="instances-status">检查中</small></div></article>
+        </section>
+
+        <aside class="kernel-note"><span class="note-icon" aria-hidden="true">◎</span><div><strong>二维码由 QQ 登录内核直接提供</strong><small>不读取虚拟屏幕，不执行截图，也不会在账号之间复用二维码。</small></div></aside>
+        <p id="runtime-error" class="runtime-error" role="alert" hidden></p>
+
+        <section class="instances-section">
+          <div class="section-head"><div><p class="eyebrow">MANAGED ACCOUNTS</p><h2>账号实例</h2></div><p>QQ 号是新实例的唯一标识</p></div>
+          <section id="instances-grid" class="instances-grid" aria-live="polite"></section>
+          <div id="empty-state" class="empty-state panel" hidden><span aria-hidden="true">＋</span><strong>还没有 QQ 实例</strong><p>新增一个 QQ 号后即可启动并扫码。</p></div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="add-dialog" class="modal">
+      <form id="add-form" class="modal-card">
+        <header class="modal-head"><div><p class="eyebrow">NEW INSTANCE</p><h2>新增 QQ 账号</h2></div><button class="icon-button close-button" type="button" data-close="add-dialog" aria-label="关闭">×</button></header>
+        <p class="modal-intro">QQ 号将作为唯一标识。账号目录、Electron 数据目录和 Socket 均由服务器自动隔离。</p>
+        <label for="new-uin">QQ 号</label>
+        <input id="new-uin" name="uin" type="text" inputmode="numeric" autocomplete="off" pattern="[1-9][0-9]{4,19}" maxlength="20" required placeholder="例如 123456789" />
+        <label class="check-row"><input name="startNow" type="checkbox" checked /><span><strong>创建后立即启动</strong><small>启动后卡片会显示扫码二维码</small></span></label>
+        <label class="check-row"><input name="autostart" type="checkbox" /><span><strong>面板重启时自动启动</strong><small>默认关闭，避免未使用的账号占用内存</small></span></label>
+        <p id="add-error" class="form-error" role="alert"></p>
+        <footer class="modal-actions"><button class="button ghost" type="button" data-close="add-dialog">取消</button><button class="button primary" type="submit">新增账号</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="settings-dialog" class="modal">
+      <form id="settings-form" class="modal-card settings-card">
+        <header class="modal-head"><div><p class="eyebrow">MANAGEMENT SETTINGS</p><h2>管理设置</h2></div><button class="icon-button close-button" type="button" data-close="settings-dialog" aria-label="关闭">×</button></header>
+        <section class="settings-section">
+          <div class="settings-title"><h3>访问安全</h3><p>修改后仍写入服务器的 <code>config.json</code>，不会使用环境变量。</p></div>
+          <div class="field-grid">
+            <label>当前访问密码<input name="currentPassword" type="password" autocomplete="current-password" minlength="12" required placeholder="保存设置前必须验证" /></label>
+            <label>会话有效期（分钟）<input name="sessionTtlMinutes" type="number" min="5" max="1440" required /></label>
+            <label>新访问密码<input name="newPassword" type="password" autocomplete="new-password" minlength="12" placeholder="留空表示不修改" /></label>
+            <label>再次输入新密码<input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" placeholder="留空表示不修改" /></label>
+          </div>
+        </section>
+        <section class="settings-section">
+          <div class="settings-title"><h3>实例容量</h3><p>限制这个面板最多可以管理多少个相互隔离的 QQ 实例。</p></div>
+          <div class="field-grid"><label>最大实例数<input name="maxInstances" type="number" min="1" max="64" required /></label></div>
+        </section>
+        <section class="settings-section readonly-settings">
+          <div class="settings-title"><h3>运行位置</h3><p>为避免把网页改到无法访问，这些启动参数只读展示。</p></div>
+          <dl><div><dt>面板监听</dt><dd id="setting-listen">—</dd></div><div><dt>账号数据目录</dt><dd id="setting-root">—</dd></div><div><dt>Cookie 安全模式</dt><dd id="setting-cookie">—</dd></div></dl>
+        </section>
+        <p id="settings-error" class="form-error" role="alert"></p>
+        <footer class="modal-actions"><button class="button ghost" type="button" data-close="settings-dialog">取消</button><button class="button primary" type="submit">保存设置</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="modal confirm-modal">
+      <section class="modal-card confirm-card">
+        <span class="warning-icon" aria-hidden="true">!</span><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
+        <footer class="modal-actions"><button id="confirm-cancel" class="button ghost" type="button">取消</button><button id="confirm-accept" class="button danger" type="button">确认</button></footer>
+      </section>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

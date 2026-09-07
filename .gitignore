@@ -1,0 +1,14 @@
+config.json
+config.*.json
+!config.example.json
+config.json.*
+state/
+data/
+node_modules/
+*.log
+*.sock
+*.backup
+*.tmp
+.initial-access.txt
+.DS_Store
+Thumbs.db
